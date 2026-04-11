@@ -35,20 +35,22 @@ CurrSense CS_M0= CurrSense(0);
 
 //=================PID 设置函数=================
 //速度PID
-void DFOC_M0_SET_VEL_PID(float P,float I,float D,float ramp)   //M0角度环PID设置
+void DFOC_M0_SET_VEL_PID(float P,float I,float D,float ramp,float limit)   //M0角度环PID设置
 {
   vel_loop_M0.P=P;
   vel_loop_M0.I=I;
   vel_loop_M0.D=D;
   vel_loop_M0.output_ramp=ramp;
+  vel_loop_M0.limit=limit;
 }
 //角度PID
-void DFOC_M0_SET_ANGLE_PID(float P,float I,float D,float ramp)   //M0角度环PID设置
+void DFOC_M0_SET_ANGLE_PID(float P,float I,float D,float ramp,float limit)   //M0角度环PID设置
 {
   angle_loop_M0.P=P;
   angle_loop_M0.I=I;
   angle_loop_M0.D=D;
   angle_loop_M0.output_ramp=ramp;
+  angle_loop_M0.limit=limit;
 }
 void DFOC_M0_SET_CURRENT_PID(float P,float I,float D,float ramp)    //M0电流环PID设置
 {
@@ -56,6 +58,7 @@ void DFOC_M0_SET_CURRENT_PID(float P,float I,float D,float ramp)    //M0电流�
   current_loop_M0.I=I;
   current_loop_M0.D=D;
   current_loop_M0.output_ramp=ramp;
+  
 }
 
 
@@ -247,26 +250,31 @@ float serial_motor_target()
 
 
 //================简易接口函数================
-void DFOC_M0_set_Velocity_Angle(float Target)
-{
- setTorque(DFOC_M0_VEL_PID(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI)),_electricalAngle());   //角度闭环
-}
-
-void DFOC_M0_setVelocity(float Target)
-{
-  setTorque(DFOC_M0_VEL_PID((serial_motor_target()-DFOC_M0_Velocity())*180/PI),_electricalAngle());   //速度闭环
-}
-
-void DFOC_M0_set_Force_Angle(float Target)   //力位
-{
-  setTorque(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI),_electricalAngle());
-}
-
-
-void DFOC_M0_setTorque(float Target)
+void DFOC_M0_setTorque(float Target)            //电流力矩环
 {
   setTorque(current_loop_M0(Target-DFOC_M0_Current()),_electricalAngle());
 }
+
+void DFOC_M0_set_Velocity_Angle(float Target)   //角度-速度-力 位置闭环
+{
+ //setTorque(DFOC_M0_VEL_PID(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI)),_electricalAngle());        //改进前
+ DFOC_M0_setTorque(DFOC_M0_VEL_PID(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI)-DFOC_M0_Velocity()));  //改进后
+}
+
+void DFOC_M0_setVelocity(float Target)          //速度闭环
+{
+  //setTorque(DFOC_M0_VEL_PID((Target-DFOC_M0_Velocity())*180/PI),_electricalAngle());   //改进前
+  DFOC_M0_setTorque(DFOC_M0_VEL_PID((Target-DFOC_M0_Velocity())*180/PI));                //改进后
+}
+
+void DFOC_M0_set_Force_Angle(float Target)      //力位闭环
+{
+  //setTorque(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI),_electricalAngle());   //改进前
+  DFOC_M0_setTorque(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI));                //改进后
+}
+
+
+
 
 
 void runFOC()

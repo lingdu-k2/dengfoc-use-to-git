@@ -19,8 +19,8 @@ float DFOC_M0_Velocity();
 float DFOC_M0_Angle();
 float DFOC_M0_Current();
 //PID
-void DFOC_M0_SET_ANGLE_PID(float P,float I,float D,float ramp);
-void DFOC_M0_SET_VEL_PID(float P,float I,float D,float ramp);
+void DFOC_M0_SET_ANGLE_PID(float P,float I,float D,float ramp,float limit);
+void DFOC_M0_SET_VEL_PID(float P,float I,float D,float ramp,float limit);
 void DFOC_M0_SET_CURRENT_PID(float P,float I,float D,float ramp);
 float DFOC_M0_VEL_PID(float error);
 float DFOC_M0_ANGLE_PID(float error);
