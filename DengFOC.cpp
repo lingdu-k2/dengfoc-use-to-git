@@ -1,5 +1,8 @@
 #include <Arduino.h> 
 #include "AS5600.h"
+#include "lowpass_filter.h"
+#include "pid.h"
+#include "InlineCurrent.h"   //引入在线电流检测
 
 #define _constrain(amt,low,high) ((amt)<(low)?(low):((amt)>(high)?(high):(amt)))
 float voltage_power_supply;
@@ -10,6 +13,64 @@ int PP=1,DIR=1;
 int pwmA = 32;
 int pwmB = 33;
 int pwmC = 25;
+
+//低通滤波初始化
+LowPassFilter M0_Vel_Flt = LowPassFilter(0.01); // Tf = 10ms   //M0速度环
+LowPassFilter M0_Curr_Flt = LowPassFilter(0.05); // Tf = 5ms   //M0电流环
+//PID
+PIDController vel_loop_M0 = PIDController{.P = 2, .I = 0, .D = 0, .ramp = 100000, .limit = voltage_power_supply/2};
+PIDController angle_loop_M0 = PIDController{.P = 2, .I = 0, .D = 0, .ramp = 100000, .limit = 100};
+PIDController current_loop_M0 = PIDController{.P = 1.2, .I = 0, .D = 0, .ramp = 100000, .limit = 12.6};
+//AS5600
+Sensor_AS5600 S0=Sensor_AS5600(0);
+TwoWire S0_I2C = TwoWire(0);
+
+#define _1_SQRT3 0.57735026919f
+#define _2_SQRT3 1.15470053838f
+
+//初始化电流闭环
+CurrSense CS_M0= CurrSense(0);
+
+
+
+//=================PID 设置函数=================
+//速度PID
+void DFOC_M0_SET_VEL_PID(float P,float I,float D,float ramp)   //M0角度环PID设置
+{
+  vel_loop_M0.P=P;
+  vel_loop_M0.I=I;
+  vel_loop_M0.D=D;
+  vel_loop_M0.output_ramp=ramp;
+}
+//角度PID
+void DFOC_M0_SET_ANGLE_PID(float P,float I,float D,float ramp)   //M0角度环PID设置
+{
+  angle_loop_M0.P=P;
+  angle_loop_M0.I=I;
+  angle_loop_M0.D=D;
+  angle_loop_M0.output_ramp=ramp;
+}
+void DFOC_M0_SET_CURRENT_PID(float P,float I,float D,float ramp)    //M0电流环PID设置
+{
+  current_loop_M0.P=P;
+  current_loop_M0.I=I;
+  current_loop_M0.D=D;
+  current_loop_M0.output_ramp=ramp;
+}
+
+
+//M0速度PID接口
+float DFOC_M0_VEL_PID(float error)   //M0速度环
+{
+   return vel_loop_M0(error);
+   
+}
+//M0角度PID接口
+float DFOC_M0_ANGLE_PID(float error)
+{
+  return angle_loop_M0(error);
+}
+
 
 //初始变量及函数定义
 #define _constrain(amt,low,high) ((amt)<(low)?(low):((amt)>(high)?(high):(amt)))
@@ -31,7 +92,10 @@ float _normalizeAngle(float angle){
 
 // 设置PWM到控制器输出
 void setPwm(float Ua, float Ub, float Uc) {
-
+  // 限制上限
+  Ua = _constrain(Ua, 0.0f, voltage_power_supply);
+  Ub = _constrain(Ub, 0.0f, voltage_power_supply);
+  Uc = _constrain(Uc, 0.0f, voltage_power_supply);
   // 计算占空比
   // 限制占空比从0到1
   float dc_a = _constrain(Ua / voltage_power_supply, 0.0f , 1.0f );
@@ -45,7 +109,7 @@ void setPwm(float Ua, float Ub, float Uc) {
 }
 
 void setTorque(float Uq,float angle_el) {
-  Uq=_constrain(Uq,-voltage_power_supply/2,voltage_power_supply/2);
+  Uq=_constrain(Uq,-(voltage_power_supply)/2,(voltage_power_supply)/2);
   float Ud=0;
   angle_el = _normalizeAngle(angle_el);
   // 帕克逆变换
@@ -72,12 +136,21 @@ void DFOC_Vbus(float power_supply)
   ledcAttachPin(pwmB, 1);
   ledcAttachPin(pwmC, 2);
   Serial.println("完成PWM初始化设置");
-  BeginSensor();
+
+  //AS5600
+  S0_I2C.begin(19,18, 400000UL);
+  S0.Sensor_init(&S0_I2C);   //初始化编码器0
+  Serial.println("编码器加载完毕");
+
+  //PID 加载
+  vel_loop_M0 = PIDController{.P = 2, .I = 0, .D = 0, .ramp = 100000, .limit = voltage_power_supply/2};
+  //初始化电流传感器
+  CS_M0.init();
  }
 
 
 float _electricalAngle(){
-  return  _normalizeAngle((float)(DIR *  PP) * getAngle_Without_track()-zero_electric_angle);
+  return  _normalizeAngle((float)(DIR *  PP) * S0.getMechanicalAngle()-zero_electric_angle);
 }
 
 
@@ -85,16 +158,49 @@ void DFOC_alignSensor(int _PP,int _DIR)
 { 
   PP=_PP;
   DIR=_DIR;
-  setTorque(3, _3PI_2);
-  delay(3000);
+  setTorque(3, _3PI_2);  //起劲
+  delay(1000);
+  S0.Sensor_update();  //更新角度，方便下面电角度读取
   zero_electric_angle=_electricalAngle();
-  setTorque(0, _3PI_2);
+  setTorque(0, _3PI_2);  //松劲（解除校准）
   Serial.print("0电角度：");Serial.println(zero_electric_angle);
 }
 
 float DFOC_M0_Angle()
 {
-  return getAngle();
+  return DIR*S0.getAngle();
+}
+
+
+//=========================电流读取=========================
+
+//通过Ia,Ib,Ic计算Iq,Id(目前仅输出Iq)
+float cal_Iq_Id(float current_a,float current_b,float angle_el)
+{
+  float I_alpha=current_a;
+  float I_beta = _1_SQRT3 * current_a + _2_SQRT3 * current_b;
+
+  float ct = cos(angle_el);
+  float st = sin(angle_el);
+  //float I_d = I_alpha * ct + I_beta * st;
+  float I_q = I_beta * ct - I_alpha * st;
+  return I_q;
+}
+float DFOC_M0_Current()
+{  
+  float I_q_M0_ori=cal_Iq_Id(CS_M0.current_a,CS_M0.current_b,_electricalAngle());
+  float I_q_M0_flit=M0_Curr_Flt(I_q_M0_ori);
+  return I_q_M0_flit;  
+}
+
+//=========================电流读取=========================
+//有滤波
+float DFOC_M0_Velocity()
+{
+  //获取速度数据并滤波
+  float vel_M0_ori=S0.getVelocity();
+  float vel_M0_flit=M0_Vel_Flt(DIR*vel_M0_ori);
+  return vel_M0_flit;   //考虑方向
 }
 
 //==============串口接收==============
@@ -132,7 +238,42 @@ String serialReceiveUserCommand() {
   return command;
 }
 
+
 float serial_motor_target()
 {
   return motor_target;
-  }
+}
+
+
+
+//================简易接口函数================
+void DFOC_M0_set_Velocity_Angle(float Target)
+{
+ setTorque(DFOC_M0_VEL_PID(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI)),_electricalAngle());   //角度闭环
+}
+
+void DFOC_M0_setVelocity(float Target)
+{
+  setTorque(DFOC_M0_VEL_PID((serial_motor_target()-DFOC_M0_Velocity())*180/PI),_electricalAngle());   //速度闭环
+}
+
+void DFOC_M0_set_Force_Angle(float Target)   //力位
+{
+  setTorque(DFOC_M0_ANGLE_PID((Target-DFOC_M0_Angle())*180/PI),_electricalAngle());
+}
+
+
+void DFOC_M0_setTorque(float Target)
+{
+  setTorque(current_loop_M0(Target-DFOC_M0_Current()),_electricalAngle());
+}
+
+
+void runFOC()
+{
+  //====传感器更新====
+  S0.Sensor_update();
+  CS_M0.getPhaseCurrents();
+  
+  //====传感器更新====
+}
