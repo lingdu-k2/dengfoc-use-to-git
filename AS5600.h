@@ -12,7 +12,7 @@ class Sensor_AS5600
     float getMechanicalAngle();
     double getSensorAngle();
   private:
-    int _Mot_Num;
+    int _Mot_Num; 
     //AS5600 变量定义
     //int sensor_direction=1;       //编码器旋转方向定义
     float angle_prev=0; // 最后一次调用 getSensorAngle() 的输出结果，用于得到完整的圈数和速度
